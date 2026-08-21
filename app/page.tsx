@@ -1,8 +1,9 @@
 // ─────────────────────────────────────────────────────────
-// これは「業務アプリの画面」です。宣伝ページ（LP）ではありません。
+// 参加イベントの整理待ち一覧（業務アプリの画面。宣伝ページではない）
 //
-// /build を実行すると、docs/03_spec.md にそって
-// この構造を保ったまま、あなたの題材のツールに作り替えられます。
+// 何をする画面か:
+//   参加したウェビナー・セミナー録画・YouTube・音声のうち、
+//   まだObsidianに書き写していないものを、古い順に片づける。
 //
 // 画面の骨格（この形は崩さない）:
 //   左メニュー（.side）＋ 上部バー（.topbar）＋ 本体（.content）
@@ -13,173 +14,103 @@
 import { useEffect, useMemo, useState } from "react";
 
 // ═══════════════════════════════════════════════════════════
-//  画面の型 ── ここだけ選び直せば、見た目と並び方が変わります
-//  /build が docs/03_spec.md の「0. 画面の型」を見てここを設定します。
-//  ⚠ 新しいCSSは書かない。下の選択肢から選ぶこと。
+//  画面の型 ── docs/03_spec.md「0. 画面の型」のとおりに設定
+//  ⚠ 新しいCSSは書かない。用意された選択肢から選ぶこと。
 // ═══════════════════════════════════════════════════════════
 
-/** 色み。業種の空気に合わせる
- *  "pine"   教育・サービス・その他（初期値）
- *  "indigo" 士業・不動産・BtoB
- *  "clay"   建設・工務店・現場仕事
- *  "sea"    医療・介護・公共
- *  "wine"   飲食・小売・美容
- */
-const TONE = "pine";
+/** 色み。使う人が投資・事業開発まわり（BtoB）なので indigo */
+const TONE = "indigo";
 
-/** 密度。1日に見る件数で決める
- *  "compact" 1日20件以上（多くの行を1画面に）
- *  "normal"  ふつう（初期値）
- *  "roomy"   1日5件以下で、1件が重い（ゆったり）
- */
-const DENSITY = "normal";
+/** 密度。月8〜12本＝1日1本以下だが、1本60分と重いので roomy */
+const DENSITY = "roomy";
 
-/** 画面の型。3行目「何が一覧で見られると助かるか」で決める
- *  "queue" 待たせているものを、古い順に片づける（問い合わせ・依頼・返信）
- *  "stage" いくつかの段階を順に進んでいく（査定→撮影→値付け→出品）
- *  "due"   期限がある（締切・訪問予定・提出物・更新期限）
- */
+/** 画面の型。「見返せないまま溜まっていく」＝古い順に片づける queue */
 const LAYOUT: "queue" | "stage" | "due" = "queue";
 
-/** 数え方。件 / 名 / 棟 / 台 / 点 / 本 など、その仕事の言葉で */
-const UNIT = "件";
+/** 数え方。セミナー・録画・動画は「本」で数える */
+const UNIT = "本";
 
-/** 区分の選択肢。LAYOUT が "stage" のときは、これが「段階」になる（順番どおりに並ぶ） */
-const CATEGORIES = ["LINE", "電話", "メール", "紹介"];
+/** 区分の選択肢。何で参加した／何に残っているか */
+const CATEGORIES = ["ウェビナー", "セミナー録画", "YouTube", "音声"];
+
+/** 何日置いたら「放置」と見なすか。月8〜12本のペースなので2週間 */
+const WAIT_LIMIT = 14;
 
 // ═══════════════════════════════════════════════════════════
 
-/** 1件のデータ。/build でこの項目名を題材に合わせて変える */
+/** 1{UNIT}のデータ。項目は5つまで */
 type Record = {
   id: string;
-  name: string;      // 主たる名前（顧客名・品名など）
-  category: string;  // 区分／段階／種別
-  note: string;      // メモ
-  date: string;      // YYYY-MM-DD（queue=受けた日 / stage=受け入れた日 / due=期限）
-  done: boolean;     // 片づいたか
+  title: string;     // イベント名
+  category: string;  // 種別（ウェビナー / セミナー録画 / YouTube / 音声）
+  note: string;      // メモ（感じたこと・誰に繋ぐか）
+  date: string;      // YYYY-MM-DD（参加日）
+  done: boolean;     // Obsidianに入れたか
 };
 
 type View = "list" | "new" | "settings";
 type Filter = "open" | "done" | "all";
 
-const KEY = "starter-records";
-const NAME_KEY = "starter-appname";
+const KEY = "event-inbox-data";
+const NAME_KEY = "event-inbox-appname";
 
-/** 画面の型ごとの言葉。ここを直せば画面じゅうの文言が揃って変わる */
+/** 画面じゅうの言葉。ここを直せば文言が揃って変わる */
 const TEXT = {
-  queue: {
-    sub: "未対応のものが、待たせている順に並びます",
-    open: "未対応", done: "対応済",
-    toTo: "対応済みにする", toBack: "未対応に戻す",
-    dateLabel: "受けた日", catLabel: "区分",
-    stat2: "3日以上 放置",
-    headOpen: "未対応（待たせている順）",
-  },
-  stage: {
-    sub: "どの段階で止まっているかが分かります",
-    open: "進行中", done: "完了",
-    toTo: "完了にする", toBack: "進行中に戻す",
-    dateLabel: "受け入れた日", catLabel: "いまの段階",
-    stat2: "7日以上 動きなし",
-    headOpen: "進行中",
-  },
-  due: {
-    sub: "期限が近い順に並びます",
-    open: "未完了", done: "完了",
-    toTo: "完了にする", toBack: "未完了に戻す",
-    dateLabel: "期限", catLabel: "種別",
-    stat2: "期限切れ",
-    headOpen: "未完了（期限が近い順）",
-  },
-}[LAYOUT];
+  sub: "まだObsidianに入れていないものが、古い順に並びます",
+  open: "未整理",
+  done: "Obsidian済",
+  toTo: "Obsidianに入れた",
+  toBack: "未整理に戻す",
+  dateLabel: "参加日",
+  catLabel: "種別",
+  stat2: `${WAIT_LIMIT}日以上 放置`,
+  headOpen: "未整理（古い順）",
+};
 
-/** n日前の日付。マイナスを渡すとn日後（"due" の見本データで使う） */
+/** n日前の日付 */
 const ago = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const today = () => ago(0);
 
-/** 今日との差。0=今日、-3=3日過ぎている、+2=あと2日 */
+/** 今日との差。0=今日、-3=3日過ぎている */
 const diff = (d: string) =>
   Math.round(
     (new Date(d + "T00:00:00").getTime() - new Date(today() + "T00:00:00").getTime()) / 86400000
   );
 
-/** 何日待たせているか（"queue" / "stage" 用） */
+/** 何日ほったらかしているか */
 const waiting = (d: string) => Math.max(0, -diff(d));
 
 /**
- * 見本データ。/build でこの中身を題材に合わせて入れ替える。
- * ⚠ 実在の人名・会社名・連絡先は使わない。件数は12〜15件（少ないと画面が寂しく見える）
+ * 見本データ。開いてすぐ触って試せるように入れてある。
+ * ⚠ 実在の人名・会社名・連絡先は使わない
  */
 const SAMPLE: Record[] = [
-  { id: "s01", name: "佐藤さん（中2）", category: "LINE",   note: "数学と英語、週2希望。木曜以外",        date: ago(0),  done: false },
-  { id: "s02", name: "田村さん（小5）", category: "電話",   note: "折り返し希望 18時以降",               date: ago(1),  done: false },
-  { id: "s03", name: "鈴木さん（高1）", category: "紹介",   note: "在籍生のご家族から。物理を見てほしい",  date: ago(1),  done: false },
-  { id: "s04", name: "中村さん（中3）", category: "メール", note: "受験相談。志望校はまだ決めていない",   date: ago(2),  done: false },
-  { id: "s05", name: "渡辺さん（中2）", category: "紹介",   note: "平日夕方のみ。部活が19時まで",         date: ago(3),  done: false },
-  { id: "s06", name: "小林さん（中1）", category: "LINE",   note: "体験授業の日程を調整中",              date: ago(4),  done: false },
-  { id: "s07", name: "松本さん（小4）", category: "メール", note: "兄弟割引について聞かれている",         date: ago(5),  done: false },
-  { id: "s08", name: "山口さん（小6）", category: "電話",   note: "料金表を送ってほしいとのこと",         date: ago(6),  done: false },
-  { id: "s09", name: "吉田さん（高2）", category: "LINE",   note: "夏期講習の残席を確認したい",           date: ago(9),  done: false },
-  { id: "s10", name: "井上さん（中3）", category: "電話",   note: "面談日程を確定。来週火曜18時",         date: ago(12), done: true },
-  { id: "s11", name: "清水さん（高3）", category: "LINE",   note: "資料送付済み。返事待ち",              date: ago(14), done: true },
-  { id: "s12", name: "森さん（小3）",   category: "紹介",   note: "体験のあと入会。4月から週1",          date: ago(16), done: true },
-  { id: "s13", name: "大野さん（中1）", category: "メール", note: "他塾と比較検討中とのこと",            date: ago(18), done: true },
-  { id: "s14", name: "岡田さん（高1）", category: "LINE",   note: "今回は見送りとご連絡あり",            date: ago(21), done: true },
+  { id: "s01", title: "SaaSの価格設計ウェビナー",     category: "ウェビナー",   note: "値上げの伝え方。伴走先の資料に入れたい",   date: ago(0),  done: false },
+  { id: "s02", title: "資本政策の基礎（第2回）",       category: "セミナー録画", note: "転換社債のところだけ見返す",             date: ago(1),  done: false },
+  { id: "s03", title: "生成AIを業務に入れる実例集",    category: "YouTube",      note: "事例3つ。手順の図を書き写したい",         date: ago(2),  done: false },
+  { id: "s04", title: "事業計画の作り方 実践編",       category: "ウェビナー",   note: "売上の積み上げ方が自分の型と違う",        date: ago(3),  done: false },
+  { id: "s05", title: "海外VCの投資基準を聞く回",      category: "音声",         note: "録音のみ40分。要点だけでよい",           date: ago(5),  done: false },
+  { id: "s06", title: "BtoB営業の立ち上げ方",          category: "セミナー録画", note: "初期の顧客リストの作り方。まだ未着手",     date: ago(6),  done: false },
+  { id: "s07", title: "採用の初期設計ミートアップ",    category: "ウェビナー",   note: "1人目の採用の話。伴走先に共有したい",     date: ago(8),  done: false },
+  { id: "s08", title: "プロダクト計測の入門",          category: "YouTube",      note: "指標の決め方。ダッシュボードの例が良い",   date: ago(11), done: false },
+  { id: "s09", title: "資金調達のタイミング討論",      category: "音声",         note: "冒頭20分だけでも先に入れる",             date: ago(15), done: false },
+  { id: "s10", title: "事業承継とM&Aの実務",           category: "セミナー録画", note: "要点を転記済み",                        date: ago(12), done: true },
+  { id: "s11", title: "カスタマーサクセスの設計",      category: "ウェビナー",   note: "章立てだけ写した。あとで追記する",        date: ago(14), done: true },
+  { id: "s12", title: "決算書の読み方 速習",           category: "YouTube",      note: "既存のノートに追記済み",                 date: ago(17), done: true },
+  { id: "s13", title: "スタートアップ法務の勘所",      category: "音声",         note: "契約チェックの観点を転記",               date: ago(19), done: true },
+  { id: "s14", title: "新規事業の撤退基準",            category: "ウェビナー",   note: "撤退ラインの3条件をメモ済み",            date: ago(21), done: true },
 ];
 
-/** 一覧をどう束ねるか。LAYOUT ごとに変わる */
-type Group = { key: string; label: string; mark?: "late" | "now"; items: Record[] };
-
-function grouped(list: Record[], filter: Filter): Group[] {
-  const head = filter === "open" ? TEXT.headOpen : filter === "done" ? TEXT.done : "すべて";
-
-  if (LAYOUT === "stage" && filter === "open") {
-    // 段階ごとに束ねる。CATEGORIES の順に並べ、中身が無い段階は出さない
-    return CATEGORIES.map((c) => ({
-      key: c,
-      label: c,
-      mark: undefined,
-      items: list.filter((i) => i.category === c),
-    })).filter((g) => g.items.length > 0);
-  }
-
-  if (LAYOUT === "due" && filter === "open") {
-    const buckets: Group[] = [
-      { key: "late",  label: "期限が過ぎている", mark: "late", items: [] },
-      { key: "now",   label: "今日・明日",       mark: "now",  items: [] },
-      { key: "week",  label: "今週のうち",                     items: [] },
-      { key: "later", label: "それ以降",                       items: [] },
-    ];
-    list.forEach((i) => {
-      const d = diff(i.date);
-      if (d < 0) buckets[0].items.push(i);
-      else if (d <= 1) buckets[1].items.push(i);
-      else if (d <= 7) buckets[2].items.push(i);
-      else buckets[3].items.push(i);
-    });
-    return buckets.filter((b) => b.items.length > 0);
-  }
-
-  return [{ key: "all", label: head, items: list }];
-}
-
-/** 行の右に出す小さなバッジ。LAYOUT ごとに意味が変わる */
+/** 行の右に出す小さなバッジ。放置日数を出す */
 function rowBadge(r: Record): { text: string; kind: "warn" | "danger" } | null {
   if (r.done) return null;
-  if (LAYOUT === "due") {
-    const d = diff(r.date);
-    if (d < 0) return { text: `${-d}日 超過`, kind: "danger" };
-    if (d === 0) return { text: "今日", kind: "warn" };
-    return null;
-  }
   const w = waiting(r.date);
-  const limit = LAYOUT === "stage" ? 7 : 3;
-  return w >= limit ? { text: `${w}日`, kind: "warn" } : null;
+  return w >= WAIT_LIMIT ? { text: `${w}日`, kind: "warn" } : null;
 }
 
 export default function Home() {
   const [items, setItems] = useState<Record[]>([]);
-  const [appName, setAppName] = useState("お問い合わせ管理");
+  const [appName, setAppName] = useState("イベント整理待ち");
   const [loaded, setLoaded] = useState(false);
 
   const [view, setView] = useState<View>("list");
@@ -187,7 +118,7 @@ export default function Home() {
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState<Record | null>(null);
 
-  const [form, setForm] = useState({ name: "", category: CATEGORIES[0], note: "", date: today() });
+  const [form, setForm] = useState({ title: "", category: CATEGORIES[0], note: "", date: today() });
 
   useEffect(() => {
     try {
@@ -207,7 +138,7 @@ export default function Home() {
     localStorage.setItem(NAME_KEY, appName);
   }, [items, appName, loaded]);
 
-  // 見本データのまま触っていない状態か（1件でも足す・消すと false になる）
+  // 見本データのまま触っていない状態か（1本でも足す・消すと false になる）
   const isSample = items.length === SAMPLE.length && items.every((i) => i.id.startsWith("s"));
 
   const counts = useMemo(
@@ -219,36 +150,34 @@ export default function Home() {
     [items]
   );
 
-  /** 2つ目の統計。LAYOUT で意味が変わる */
-  const attention = useMemo(() => {
-    const open = items.filter((i) => !i.done);
-    if (LAYOUT === "due") return open.filter((i) => diff(i.date) < 0).length;
-    const limit = LAYOUT === "stage" ? 7 : 3;
-    return open.filter((i) => waiting(i.date) >= limit).length;
-  }, [items]);
+  /** 2週間以上ほったらかしている本数 */
+  const attention = useMemo(
+    () => items.filter((i) => !i.done && waiting(i.date) >= WAIT_LIMIT).length,
+    [items]
+  );
 
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
     return items
       .filter((i) => (filter === "all" ? true : filter === "open" ? !i.done : i.done))
-      .filter((i) => !k || (i.name + i.note + i.category).toLowerCase().includes(k))
+      .filter((i) => !k || (i.title + i.note + i.category).toLowerCase().includes(k))
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [items, filter, q]);
 
-  const groups = useMemo(() => grouped(shown, filter), [shown, filter]);
+  const headLabel = filter === "open" ? TEXT.headOpen : filter === "done" ? TEXT.done : "すべて";
 
   function resetForm() {
-    setForm({ name: "", category: CATEGORIES[0], note: "", date: today() });
+    setForm({ title: "", category: CATEGORIES[0], note: "", date: today() });
     setEditing(null);
   }
 
   function save() {
-    const name = form.name.trim();
-    if (!name) return;
+    const title = form.title.trim();
+    if (!title) return;
     if (editing) {
-      setItems(items.map((i) => (i.id === editing.id ? { ...i, ...form, name } : i)));
+      setItems(items.map((i) => (i.id === editing.id ? { ...i, ...form, title } : i)));
     } else {
-      setItems([...items, { id: String(Date.now()), ...form, name, done: false }]);
+      setItems([...items, { id: String(Date.now()), ...form, title, done: false }]);
     }
     resetForm();
     setView("list");
@@ -256,7 +185,7 @@ export default function Home() {
 
   function startEdit(r: Record) {
     setEditing(r);
-    setForm({ name: r.name, category: r.category, note: r.note, date: r.date });
+    setForm({ title: r.title, category: r.category, note: r.note, date: r.date });
     setView("new");
   }
 
@@ -297,7 +226,7 @@ export default function Home() {
             </button>
           ))}
         </div>
-        <div className="side-foot">/build で、あなたの題材に作り替わります</div>
+        <div className="side-foot">Obsidianに書き写したら「{TEXT.toTo}」を押す</div>
       </nav>
 
       {/* ───────── 本体 ───────── */}
@@ -332,7 +261,7 @@ export default function Home() {
               <div className="filters">
                 <div className="search">
                   <input className="field" value={q} onChange={(e) => setQ(e.target.value)}
-                    placeholder="名前・メモで検索" />
+                    placeholder="タイトル・メモで検索" />
                 </div>
                 <div className="seg">
                   {(["open", "done", "all"] as Filter[]).map((f) => (
@@ -346,52 +275,45 @@ export default function Home() {
               </div>
 
               <div className="list">
+                <div className="list-head">
+                  {headLabel}
+                  <span className="count">{shown.length} {UNIT}</span>
+                </div>
+
                 {shown.length === 0 ? (
-                  <>
-                    <div className="list-head">
-                      {filter === "open" ? TEXT.headOpen : filter === "done" ? TEXT.done : "すべて"}
-                      <span className="count">0 {UNIT}</span>
+                  <div className="empty">
+                    <div className="t">
+                      {q ? "見つかりませんでした"
+                        : filter === "open" ? `${TEXT.open}はありません`
+                        : "ここに表示するものがありません"}
                     </div>
-                    <div className="empty">
-                      <div className="t">{q ? "見つかりませんでした" : "ここに表示するものがありません"}</div>
-                      <div className="d">
-                        {q ? "検索の言葉を変えてみてください。" : "右上の「新規登録」から追加できます。"}
-                      </div>
+                    <div className="d">
+                      {q ? "検索の言葉を変えてみてください。"
+                        : "参加したウェビナーや録画は、右上の「新規登録」から1本ずつ足せます。"}
                     </div>
-                  </>
+                  </div>
                 ) : (
-                  groups.map((g) => (
-                    <div key={g.key}>
-                      <div className={"group-head" + (g.mark ? ` is-${g.mark}` : "")}>
-                        {g.mark && <span className="dot" />}
-                        {g.label}
-                        <span className="count">{g.items.length} {UNIT}</span>
+                  shown.map((r) => {
+                    const b = rowBadge(r);
+                    return (
+                      <div className="row" key={r.id}>
+                        <div className="row-main">
+                          <div className="row-title">{r.title}</div>
+                          {r.note && <div className="row-sub">{r.note}</div>}
+                        </div>
+                        <div className="row-meta">
+                          {b && <span className={`badge badge-${b.kind}`}>{b.text}</span>}
+                          <span className="badge">{r.category}</span>
+                          <span className="row-time">{r.date.slice(5).replace("-", "/")}</span>
+                          <button className="btn-ghost" onClick={() => startEdit(r)}>編集</button>
+                          <button className="btn-ghost" onClick={() => toggle(r.id)}>
+                            {r.done ? TEXT.toBack : TEXT.toTo}
+                          </button>
+                          <button className="btn-ghost danger-btn" onClick={() => remove(r.id)}>削除</button>
+                        </div>
                       </div>
-                      {g.items.map((r) => {
-                        const b = rowBadge(r);
-                        return (
-                          <div className="row" key={r.id}>
-                            <div className="row-main">
-                              <div className="row-title">{r.name}</div>
-                              {r.note && <div className="row-sub">{r.note}</div>}
-                            </div>
-                            <div className="row-meta">
-                              {b && <span className={`badge badge-${b.kind}`}>{b.text}</span>}
-                              {!(LAYOUT === "stage" && filter === "open") && (
-                                <span className="badge">{r.category}</span>
-                              )}
-                              <span className="row-time">{r.date.slice(5).replace("-", "/")}</span>
-                              <button className="btn-ghost" onClick={() => startEdit(r)}>編集</button>
-                              <button className="btn-ghost" onClick={() => toggle(r.id)}>
-                                {r.done ? TEXT.toBack : TEXT.toTo}
-                              </button>
-                              <button className="btn-ghost danger-btn" onClick={() => remove(r.id)}>削除</button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
               <p className="note">データはこの端末のブラウザにだけ保存されます。外部には送信されません。</p>
@@ -402,12 +324,12 @@ export default function Home() {
           {view === "new" && (
             <div className="panel">
               <div className="form-row">
-                <label className="label" htmlFor="f-name">名前<span className="req">必須</span></label>
-                <input id="f-name" className="field" value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                <label className="label" htmlFor="f-title">イベント名<span className="req">必須</span></label>
+                <input id="f-title" className="field" value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
                   onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-                  placeholder="例：Aさん（中2）" />
-                <span className="hint">あとで見て誰か分かる書き方にします</span>
+                  placeholder="例：SaaSの価格設計ウェビナー" />
+                <span className="hint">あとで見て、何の回だったか分かる書き方にします</span>
               </div>
 
               <div className="form-row">
@@ -431,11 +353,12 @@ export default function Home() {
                 <label className="label" htmlFor="f-note">メモ</label>
                 <textarea id="f-note" className="field" value={form.note}
                   onChange={(e) => setForm({ ...form, note: e.target.value })}
-                  placeholder="希望曜日・科目・折り返し時間など" />
+                  placeholder="感じたこと・誰に共有したいか・見返したい箇所" />
+                <span className="hint">ここが一番あとで効きます。1行でいいので、その場で書いておきます</span>
               </div>
 
               <div className="form-actions">
-                <button className="btn" onClick={save} disabled={!form.name.trim()}>
+                <button className="btn" onClick={save} disabled={!form.title.trim()}>
                   {editing ? "保存する" : "一覧に追加"}
                 </button>
                 <button className="btn-ghost" onClick={() => { resetForm(); setView("list"); }}>やめる</button>
